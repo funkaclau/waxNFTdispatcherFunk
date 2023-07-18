@@ -14,7 +14,6 @@ TIMEOUT = 3
 # RETRIES = 2
 RETRIES = 0
 
-
 class AssetSender:
     def __init__(
         self,
@@ -185,13 +184,15 @@ class AssetSender:
         )
         return action
 
-    def _prepare_mint_transaction(
+    def _prepare_mass_mint_transaction(
         self,
         authorized_minter: str,
         collection_name: str,
         schema_name: str,
         template_id: str,
         new_asset_owner: str,
+        quantity = 1,
+        
         immutable_data: list = None,
         mutable_data: list = None,
         tokens_to_back: str = "0.00000000 WAX",
@@ -262,6 +263,99 @@ class AssetSender:
             data=data,
             authorization=[auth],
         )
+        print(action)
+        actions = []
+        while quantity > 0:
+        	actions.append(action)
+        	quantity -= 1
+        	
+        return actions
+        
+        
+        
+        
+        
+        
+        
+        
+        
+    def _prepare_mint_transaction(
+        self,
+        authorized_minter: str,
+        collection_name: str,
+        schema_name: str,
+        template_id: str,
+        new_asset_owner: str,
+        immutable_data: list = None,
+        mutable_data: list = None,
+        tokens_to_back: str = "0.00000000 WAX",
+    ):
+        """
+        :param authorized_minter: wallet with authorisation to mint collection assets
+        :param collection_name: self-explanatory
+        :param schema_name: self-explanatory
+        :param template_id: self-explanatory
+        :param new_asset_owner: the recipient wallet
+        :param immutable_data: better to leave it unfilled
+        :param mutable_data: better to leave it unfilledl
+        :param tokens_to_back: amount of tokens with token symbol. Like that "0.00000000 WAX".
+                Always 8 digits after period and one space before the token symbol.
+        :return: Ready Action object.
+        """
+        # workaround for passing mutable default argument
+        if immutable_data is None:
+            immutable_data = []
+        if mutable_data is None:
+            mutable_data = []
+
+        logger.info("Creating mint transaction...")
+        data = [
+            pyntelope.Data(
+                name="authorized_minter",
+                value=pyntelope.types.Name(authorized_minter),
+            ),
+            pyntelope.Data(
+                name="collection_name",
+                value=pyntelope.types.Name(collection_name),
+            ),
+            pyntelope.Data(
+                name="schema_name",
+                value=pyntelope.types.Name(schema_name),
+            ),
+            pyntelope.Data(
+                name="template_id",
+                value=pyntelope.types.Uint32(template_id),
+            ),
+            pyntelope.Data(
+                name="new_asset_owner",
+                value=pyntelope.types.Name(new_asset_owner),
+            ),
+            pyntelope.Data(
+                name="immutable_data",
+                value=pyntelope.types.Array(
+                    values=immutable_data, type_=pyntelope.types.Array
+                ),
+            ),
+            pyntelope.Data(
+                name="mutable_data",
+                value=pyntelope.types.Array(
+                    values=mutable_data, type_=pyntelope.types.Array
+                ),
+            ),
+            pyntelope.Data(
+                name="tokens_to_back",
+                value=pyntelope.types.Asset(tokens_to_back),
+            ),
+        ]
+        auth = pyntelope.Authorization(
+            actor=self.collection_wallet, permission="active"
+        )
+        action = pyntelope.Action(
+            account="atomicassets",  # this is the contract account
+            name="mintasset",  # this is the action name
+            data=data,
+            authorization=[auth],
+        )
         return action
 
     def _send_transaction(self, action):
@@ -270,7 +364,10 @@ class AssetSender:
         :param action: Action object.
         :return: Tuple with asset ID(s) and TX ID/False(if TX failed).
         """
-        raw_transaction = pyntelope.Transaction(actions=[action, action])
+        if type(action) == list:
+            raw_transaction = pyntelope.Transaction(actions=action)
+        else:
+            raw_transaction = pyntelope.Transaction(actions=[action])
         logger.debug("Linking transaction to the network...")
         if self.testnet:
             net = pyntelope.WaxTestnet()  # this is an alias for WAX testnet node
@@ -406,49 +503,50 @@ class AssetSender:
         txs = []
         retry = 0
         wait_time = TIMEOUT
-        while minted_quantity < quantity:
-            try:
-                asset_id, minting_tx = self._send_transaction(
-                    self._prepare_mint_transaction(
-                        self.collection_wallet,
-                        self.collection,
-                        schema,
-                        template,
-                        wallet,
-                    )
+        try:
+            asset_id, minting_tx = self._send_transaction(
+                self._prepare_mass_mint_transaction(
+                    self.collection_wallet,
+                    self.collection,
+                    schema,
+                    template,
+                    wallet,
+                    quantity
                 )
-            except exc.ConnectionError:
-                logger.error(
-                    f"Couldn't mint '{schema}, {template}'. Will retry in {wait_time} seconds..."
-                )
-                # Sleep in order to get rid of "duplicate transaction" error
-                time.sleep(wait_time)
-                wait_time *= 2
-                retry += 1
-                if retry <= RETRIES:
-                    continue
+            )
+        except exc.ConnectionError:
+            logger.error(
+                f"Couldn't mint '{schema}, {template}'. Will retry in {wait_time} seconds..."
+            )
+            # Sleep in order to get rid of "duplicate transaction" error
+            time.sleep(wait_time)
+            wait_time *= 2
+            retry += 1
+            if retry <= RETRIES:
                 logger.error(f"Reached {retry} retries. Giving up...")
                 minting_tx = False
-            if minting_tx and minting_tx not in txs:
-                logger.info(
-                    f"Successfully minted ({asset_id}, {schema}, {template}): {minting_tx}"
-                )
-                minted_quantity += 1
-                retry = 0
-                wait_time = TIMEOUT
-                txs.append(((asset_id, schema, template), minting_tx))
-                # Sleep in order to get rid of "duplicate transaction" error
-                time.sleep(2)
-            elif not minting_tx:
-                logger.error(
-                    f"Failed to mint asset with schema '{schema}' and template '{template}'!"
-                )
-                minted_quantity += 1
-                retry = 0
-                wait_time = TIMEOUT
-                txs.append(((asset_id, schema, template), False))
-                # Sleep in order to get rid of "duplicate transaction" error
-                time.sleep(2)
+        if minting_tx and minting_tx not in txs:
+            logger.info(
+                    f"Successfully minted ({asset_id}, {schema}, {template}, {quantity}): {minting_tx}"
+            )
+            
+                
+            minted_quantity += quantity
+            retry = 0
+            wait_time = TIMEOUT
+            txs.append(((asset_id, schema, template), minting_tx))
+            # Sleep in order to get rid of "duplicate transaction" error
+            time.sleep(2)
+        elif not minting_tx:
+            logger.error(
+                f"Failed to mint asset with schema '{schema}' and template '{template}'!"
+            )
+            #minted_quantity += 1
+#            retry = 0
+#            wait_time = TIMEOUT
+#            txs.append(((asset_id, schema, template), False))
+#            # Sleep in order to get rid of "duplicate transaction" error
+            time.sleep(2)
         return txs
 
     def mint_assets_and_get_ids(
